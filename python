@@ -1,0 +1,100 @@
+import requests
+import logging
+from telegram.ext import Application, CommandHandler
+from flask import Flask, request
+import os
+from dotenv import load_dotenv
+import asyncio
+
+# Configuração de logging
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Carregar variáveis de ambiente
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+RENDER_URL = os.getenv("RENDER_URL")  # Ex.: https://seu-bot.onrender.com
+
+# Inicializar Flask para webhooks
+app = Flask(__name__)
+
+# Inicializar o bot
+application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# Armazenar tokens já enviados
+def carregar_enviados():
+    try:
+        with open("enviados.txt", "r") as f:
+            return set(f.read().splitlines())
+    except FileNotFoundError:
+        return set()
+
+def salvar_enviado(token_id):
+    with open("enviados.txt", "a") as f:
+        f.write(f"{token_id}\n")
+
+enviados = carregar_enviados()
+
+async def buscar_tokens():
+    url = "https://pump.fun/api/tokens"
+    try:
+        resposta = requests.get(url, timeout=10)
+        resposta.raise_for_status()
+        tokens = resposta.json()
+        for token in tokens:
+            token_id = token.get("id")
+            name = token.get("name", "N/A")
+            contract_address = token.get("address", "N/A")
+            twitter = token.get("twitter")
+            telegram_link = token.get("telegram")
+
+            if token_id and token_id not in enviados and twitter and telegram_link:
+                mensagem = (
+                    f"🚀 Novo token no Pump.fun\n"
+                    f"📛 Nome: {name}\n"
+                    f"📜 Endereço: {contract_address}\n"
+                    f"🐦 Twitter: {twitter}\n"
+                    f"📢 Telegram: {telegram_link}"
+                )
+                await application.bot.send_message(chat_id=CHAT_ID, text=mensagem)
+                enviados.add(token_id)
+                salvar_enviado(token_id)
+                logger.info(f"Mensagem enviada para token: {token_id}")
+
+    except requests.RequestException as e:
+        logger.error(f"Erro na requisição à API: {e}")
+    except Exception as e:
+        logger.error(f"Erro inesperado: {e}")
+
+# Handler para comando /start
+async def start(update, context):
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Bot iniciado! Monitorando novos tokens.")
+    await buscar_tokens()
+
+# Configurar Flask para receber webhooks
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+async def webhook():
+    update = request.get_json()
+    await application.update_queue.put(update)
+    return {"ok": True}
+
+# Configurar o webhook no Telegram
+async def set_webhook():
+    webhook_url = f"{RENDER_URL}/{TELEGRAM_TOKEN}"
+    await application.bot.set_webhook(url=webhook_url)
+    logger.info(f"Webhook configurado: {webhook_url}")
+
+if __name__ == "__main__":
+    # Adicionar handler para comando /start
+    application.add_handler(CommandHandler("start", start))
+
+    # Configurar o webhook ao iniciar
+    asyncio.run(set_webhook())
+
+    # Iniciar o servidor Flask
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.
